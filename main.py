@@ -3,6 +3,7 @@ from discord.ext import commands
 from datetime import datetime, timedelta
 from discord.ext import tasks
 from discord.ext.commands import has_permissions
+import random
 import sqlite3
 import os
 
@@ -16,6 +17,7 @@ bot = commands.Bot(command_prefix='/', intents=intents)
 con = sqlite3.connect('databases/database-discord.db')
 cur = con.cursor()
 cur.execute('CREATE TABLE IF NOT EXISTS reminders(username TEXT, remind_at TIMESTAMP, subject TEXT, reminded BOOLEAN, channelID TEXT, guildID TEXT)')
+cur.execute('CREATE TABLE IF NOT EXISTS flashcards(topic TEXT, question TEXT, answer TEXT, userID TEXT, guildID TEXT, channelID TEXT)')
 
 @tasks.loop(minutes=1)
 async def check_reminders():
@@ -145,6 +147,97 @@ async def remindme(ctx, time, subject):
             print(e)
             embed = discord.Embed(title="Invalid time format", description="Please use 'YYYY-MM-DD HH:MM' or 'HH:MM'")
             await ctx.send(embed=embed)
+
+
+@bot.command(name='flashcard', help="Add, Store and Manage Flashcards")
+async def flashcards(ctx, command="", *args):
+    await ctx.message.delete()
+    if command == "add":
+        try:
+            topic = args[0]
+            question = args[1]
+            answer = args[2]
+        except:
+            await ctx.send("One or more arguments are missing!\nCommand usage:  ***/flashcard add <topic> <question> <answer>***")
+            return
+        
+        cur.execute('INSERT INTO flashcards VALUES (?, ?, ?, ?, ?, ?)', (topic, question, answer, ctx.message.author.id, ctx.guild.id, ctx.channel.id))
+        con.commit()
+        
+        embed = discord.Embed(
+            title="Flash Card Added!",
+            description=f"Question added by {ctx.message.author.mention} for {topic}",
+            color=discord.Color.green()
+        )
+        embed.add_field(name="Question", value=question, inline=False)
+        embed.add_field(name="Answer", value=answer, inline=False)
+        embed.set_footer(text="Study Buddy")
+
+        await ctx.send(embed=embed)
+
+    elif command == "list":
+        try:
+            page = int(args[0])
+        except:
+            page = 1
+
+        try:
+            topic = args[1]
+        except:
+            topic = None
+        
+        if topic == None:
+            flashcards = cur.execute('SELECT rowid, * FROM flashcards WHERE guildID = ? AND channelID = ?', (ctx.guild.id, ctx.channel.id)).fetchall()
+        else:
+            flashcards = cur.execute('SELECT rowid, * FROM flashcards WHERE guildID = ? AND channelID = ? AND topic = ?', (ctx.guild.id, ctx.channel.id, topic)).fetchall()
+        
+        if len(flashcards) == 0:
+            embed = discord.Embed(
+                title="No Flash Cards Found!",
+                description=f"Add a flash card with */flashcard add <topic> <question> <answer>*",
+                color=discord.Color.red()
+            )
+            embed.set_footer(text="Study Buddy")
+            await ctx.send(embed=embed)
+            return
+    
+        if len(flashcards) > 10:
+            flashcards = flashcards[(page-1)*10:page*10]
+        else:
+            flashcards = flashcards[(page-1)*10:]
+        
+        if len(flashcards) == 0:
+            embed = discord.Embed(
+                title="There are no more flash cards!",
+                description="You have reached the end of the list.\nThere is no flashcard on this page",
+                color=discord.Color.red()
+            )
+            embed.set_footer(text="Study Buddy")
+            await ctx.send(embed=embed)
+            return
+    
+        
+        for flashcard in flashcards:
+            rowid, topic, question, answer, userID, guildID, channelID = flashcard
+            guild = bot.get_guild(int(guildID))
+            user = guild.get_member(int(userID))
+            embed = discord.Embed(
+                title=f"Flash Card -- Topic: {topic} -- ID: {rowid}",
+                description=f"This flash card was added by {user.mention}",
+                color=discord.Color.blue()
+            ) 
+            embed.add_field(name="Question", value=question, inline=False)
+            embed.add_field(name="Answer", value=f"|| {answer} ||", inline=False)
+            embed.set_footer(text="Try to answer the question before revealing the answer -- Study Buddy")
+            await ctx.send(embed=embed)
+
+        total_pages = len(flashcards)//10   
+        if len(flashcards) % 10 != 0:
+            total_pages += 1
+        
+        await ctx.send(f"Page {page} of {total_pages}")
+    else:
+        await ctx.send("Invalid Command")
 
 
 

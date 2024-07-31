@@ -5,6 +5,8 @@ name = "pypi"
 
 [packages]
 discord = "*"
+discord-py-slash-command = "*"
+discord-py-interactions = "*"
 
 [dev-packages]
 

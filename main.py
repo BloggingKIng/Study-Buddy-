@@ -1,8 +1,9 @@
 import discord
+from discord import app_commands
 from discord.ext import commands
-from datetime import datetime, timedelta
 from discord.ext import tasks
 from discord.ext.commands import has_permissions
+from datetime import datetime, timedelta
 import random
 import sqlite3
 import os
@@ -12,7 +13,7 @@ token = os.getenv('DISCORD_TOKEN')
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
-bot = commands.Bot(command_prefix='/', intents=intents)
+bot = commands.Bot(command_prefix='!', intents=intents)
 
 con = sqlite3.connect('databases/database-discord.db')
 cur = con.cursor()
@@ -72,31 +73,35 @@ async def check_reminders():
 @bot.event
 async def on_ready():
     print(f'We have logged in as {bot.user}')
+    try:
+        synced = await bot.tree.sync()
+        print(f'Synced {len(synced)} command(s)')
+    except Exception as e:
+        print(e)
     if not check_reminders.is_running():
         check_reminders.start()
     
-@bot.command(name='clear', help='Clears the given number of messages')
-@has_permissions(administrator=True)
-async def clear(ctx, amount=5):
 
-    amount = int(amount)
+@bot.tree.command(name='clear', description='Clears the given number of messages')
+async def clear(interaction: discord.Interaction, amount: int = 5):
+
     if amount > 100:
-        await ctx.send("You can't delete more than 100 messages at a time!")
+        await interaction.response.send_message("You can't delete more than 100 messages at a time!", ephemeral=True)
         return
-    
+
+    await interaction.response.defer(ephemeral=True)
+
     try:
-        deleted = await ctx.channel.purge(limit=amount, check=lambda msg: not msg.pinned)
-        await ctx.send(f"Successfully deleted {len(deleted)} messages.")
+        deleted = await interaction.channel.purge(limit=amount, check=lambda msg: not msg.pinned)
+        await interaction.followup.send(f"Successfully deleted {len(deleted)} messages.")
     except discord.HTTPException as e:
-        await ctx.send(f"Error deleting messages: {e}")
+        await interaction.followup.send(f"Error deleting messages: {e}")
+
     
-@bot.command(name='remindme', help='Remindign students to study the subject at the given time!')
-async def remindme(ctx, time, subject):
-    print(ctx.message.author.id)
-    try:
-        await ctx.message.delete()
-    except Exception as e:
-        print(e)
+@bot.tree.command(name='remindme', description='Remindign students to study the subject at the given time!')
+async def remindme(interaction: discord.Interaction, time:str, subject:str):
+
+    await interaction.response.defer()
 
     date_time_format = "%Y-%m-%d %H:%M"
     time_format = "%H:%M"
@@ -104,7 +109,7 @@ async def remindme(ctx, time, subject):
     try:
         remind_at = datetime.strptime(time, date_time_format)
         if remind_at < datetime.now():
-            await ctx.send("***How tf am I supposed to do time travel to remind you?\n***Provide a valid time, of future!")
+            await interaction.followup.send("***How tf am I supposed to do time travel to remind you?\n***Provide a valid time, of future!", ephemeral=True)
             return
         time_difference = remind_at - datetime.now()
         print(time_difference)
@@ -112,15 +117,16 @@ async def remindme(ctx, time, subject):
 
         embed = discord.Embed(
             title=f'Reminder for {subject}', 
-            description=f'Reminder set for {remind_at}, I will remind you in {hours_diff:.2f} hours\nCC: {ctx.message.author.mention}',
+            description=f'Reminder set for {remind_at}, I will remind you in {hours_diff:.2f} hours\nCC: {interaction.user.mention}',
             color=discord.Color.blue()
         )
         embed.set_footer(text='Study Buddy')
         
-        cur.execute('INSERT INTO reminders VALUES (?, ?, ?, ?, ?, ?)', (ctx.message.author.id, remind_at.strftime(date_time_format), subject, False, ctx.channel.id, ctx.guild.id))
+        cur.execute('INSERT INTO reminders VALUES (?, ?, ?, ?, ?, ?)', (interaction.user.id, remind_at.strftime(date_time_format), subject, False, interaction.channel.id, interaction.guild.id))
         con.commit()
 
-        await ctx.send(embed=embed)
+        await interaction.followup.send(embed=embed)
+        return
 
     except Exception as e:
         try:
@@ -134,62 +140,60 @@ async def remindme(ctx, time, subject):
 
             embed = discord.Embed(
                 title=f'Reminder for {subject}', 
-                description=f'Reminder set for {remind_at}, I will remind you in {hours_diff:.2f} hours.\nCC: {ctx.message.author.mention}',
+                description=f'Reminder set for {remind_at}, I will remind you in {hours_diff:.2f} hours.\nCC: {interaction.user.mention}',
                 color=discord.Color.blue()
             )
             embed.set_footer(text='Study Buddy')
             
-            cur.execute('INSERT INTO reminders VALUES (?, ?, ?, ?, ?, ?)', (ctx.message.author.id, remind_at.strftime(date_time_format), subject, False, ctx.channel.id, ctx.guild.id))
+            cur.execute('INSERT INTO reminders VALUES (?, ?, ?, ?, ?, ?)', (interaction.user.id, remind_at.strftime(date_time_format), subject, False, interaction.channel.id, interaction.guild.id))
             con.commit()
 
-            await ctx.send(embed=embed)
+            await interaction.followup.send(embed=embed)
+            return
         except Exception as e:
             print(e)
             embed = discord.Embed(title="Invalid time format", description="Please use 'YYYY-MM-DD HH:MM' or 'HH:MM'")
-            await ctx.send(embed=embed)
-
-
-@bot.command(name='flashcard', help="Add, Store and Manage Flashcards")
-async def flashcards(ctx, command="", *args):
-    await ctx.message.delete()
-    if command == "add":
-        try:
-            topic = args[0]
-            question = args[1]
-            answer = args[2]
-        except:
-            await ctx.send("One or more arguments are missing!\nCommand usage:  ***/flashcard add <topic> <question> <answer>***")
+            await interaction.followup.send(embed=embed)
             return
-        
-        cur.execute('INSERT INTO flashcards VALUES (?, ?, ?, ?, ?, ?)', (topic, question, answer, ctx.message.author.id, ctx.guild.id, ctx.channel.id))
-        con.commit()
-        
-        embed = discord.Embed(
-            title="Flash Card Added!",
-            description=f"Question added by {ctx.message.author.mention} for {topic}",
-            color=discord.Color.green()
-        )
-        embed.add_field(name="Question", value=question, inline=False)
-        embed.add_field(name="Answer", value=answer, inline=False)
-        embed.set_footer(text="Study Buddy")
 
-        await ctx.send(embed=embed)
+@bot.tree.command(name='flashcards', description='Add, Store and Manage Flashcards')
+async def flashcards(interaction: discord.Interaction, command: str, topic: str = None, question: str = None, answer: str = None, page: int = 1):
+    
+    await interaction.response.defer(ephemeral=True)
+
+    if command == "add":
+        if topic is None or question is None or answer is None:
+            await interaction.followup.send(
+                "One or more arguments are missing!\nCommand usage: ***/flashcards add <topic> <question> <answer>***", 
+                ephemeral=True
+            )
+            return
+
+        try:
+            
+            cur.execute('INSERT INTO flashcards (topic, question, answer, userID, guildID, channelID) VALUES (?, ?, ?, ?, ?, ?)',(topic, question, answer, interaction.user.id, interaction.guild.id, interaction.channel.id))
+            con.commit()
+
+            embed = discord.Embed(
+                title="Flash Card Added!",
+                description=f"Question added by {interaction.user.mention} for {topic}",
+                color=discord.Color.green()
+            )
+            embed.add_field(name="Question", value=question, inline=False)
+            embed.add_field(name="Answer", value=answer, inline=False)
+            embed.set_footer(text="Study Buddy")
+
+            await interaction.followup.send(embed=embed)
+
+        except Exception as e:
+            await interaction.followup.send(f"An error occurred while adding the flashcard: {e}", ephemeral=True)
 
     elif command == "list":
-        try:
-            page = int(args[0])
-        except:
-            page = 1
-
-        try:
-            topic = args[1]
-        except:
-            topic = None
         
-        if topic == None:
-            flashcards = cur.execute('SELECT rowid, * FROM flashcards WHERE guildID = ? AND channelID = ?', (ctx.guild.id, ctx.channel.id)).fetchall()
+        if topic is None:
+            flashcards = cur.execute('SELECT rowid, * FROM flashcards WHERE guildID = ?', (interaction.guild.id,)).fetchall()
         else:
-            flashcards = cur.execute('SELECT rowid, * FROM flashcards WHERE guildID = ? AND channelID = ? AND topic = ?', (ctx.guild.id, ctx.channel.id, topic)).fetchall()
+            flashcards = cur.execute('SELECT rowid, * FROM flashcards WHERE guildID = ? AND topic = ?', (interaction.guild.id, topic)).fetchall()
         
         if len(flashcards) == 0:
             embed = discord.Embed(
@@ -198,13 +202,13 @@ async def flashcards(ctx, command="", *args):
                 color=discord.Color.red()
             )
             embed.set_footer(text="Study Buddy")
-            await ctx.send(embed=embed)
+            await interaction.followup.send(embed=embed, ephemeral=True)
             return
     
-        if len(flashcards) > 10:
-            flashcards = flashcards[(page-1)*10:page*10]
+        if len(flashcards) > 5:
+            flashcards = flashcards[(page-1)*5:page*5]
         else:
-            flashcards = flashcards[(page-1)*10:]
+            flashcards = flashcards[(page-1)*5:]
         
         if len(flashcards) == 0:
             embed = discord.Embed(
@@ -213,32 +217,35 @@ async def flashcards(ctx, command="", *args):
                 color=discord.Color.red()
             )
             embed.set_footer(text="Study Buddy")
-            await ctx.send(embed=embed)
+            await interaction.followup.send(embed=embed, ephemeral=True)
             return
     
         
         for flashcard in flashcards:
+
             rowid, topic, question, answer, userID, guildID, channelID = flashcard
+
             guild = bot.get_guild(int(guildID))
             user = guild.get_member(int(userID))
+
             embed = discord.Embed(
                 title=f"Flash Card -- Topic: {topic} -- ID: {rowid}",
                 description=f"This flash card was added by {user.mention}",
                 color=discord.Color.blue()
             ) 
+
             embed.add_field(name="Question", value=question, inline=False)
             embed.add_field(name="Answer", value=f"|| {answer} ||", inline=False)
             embed.set_footer(text="Try to answer the question before revealing the answer -- Study Buddy")
-            await ctx.send(embed=embed)
 
-        total_pages = len(flashcards)//10   
-        if len(flashcards) % 10 != 0:
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+        total_pages = len(flashcards)//5   
+        if len(flashcards) % 5 != 0:
             total_pages += 1
         
-        await ctx.send(f"Page {page} of {total_pages}")
+        await interaction.followup.send(f"Page {page} of {total_pages}", ephemeral=True)
     else:
-        await ctx.send("Invalid Command")
-
-
+        await interaction.followup.send("Invalid Command",ephemeral=True)
 
 bot.run(token)

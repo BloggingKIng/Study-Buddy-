@@ -296,7 +296,23 @@ async def flashcards(interaction: discord.Interaction, command: app_commands.Cho
 
 
 @bot.tree.command(name='notes', description='Add, Store and Manage Notes')
-async def notes(interaction: discord.Interaction,command: str, topic: str = None, note: str = None):
+
+@app_commands.describe(
+    command="The command to execute (required)",
+    topic="The topic of the note (required for add command, optional for list command)",
+    note="The note that you want to add (required only for add command)",
+    id="Id of the note (required for delete command)"
+)
+
+@app_commands.choices(
+    command=[
+        app_commands.Choice(name="add", value="add"),
+        app_commands.Choice(name="list", value="list"),
+        app_commands.Choice(name="delete", value="delete"),
+    ],
+)
+
+async def notes(interaction: discord.Interaction,command: str, topic: str = None, note: str = None, id: int = -1):
 
     """
         Notes are supposed to be different from flashcards
@@ -305,7 +321,7 @@ async def notes(interaction: discord.Interaction,command: str, topic: str = None
         Notes are also supposed to be more simplistic
     """
 
-    await interaction.response.defer()
+    await interaction.response.defer(ephemeral=True)
 
     if command == "add":
 
@@ -313,7 +329,7 @@ async def notes(interaction: discord.Interaction,command: str, topic: str = None
             await interaction.followup.send("Please specify a topic and a note", ephemeral=True)
             return
 
-        cur.execute('INSERT INTO notes VALUES (?, ?, ?, ?)', (interaction.user.id, interaction.guild.id, topic, note))
+        cur.execute('INSERT INTO notes VALUES (?, ?, ?, ?, ?)', (topic, note, interaction.user.id, interaction.guild.id, interaction.channel.id))
         con.commit()
         rowid = cur.lastrowid
         
@@ -332,18 +348,114 @@ async def notes(interaction: discord.Interaction,command: str, topic: str = None
             await interaction.followup.send(message, ephemeral=True)
             return
         
-        message = "***Notes:***\n\n"
+        message = "***Notes:***\n**ID:\tNote**\n"
         for note in notes:
 
-            rowid, userID, guildID, topic, note = note
-            message += f"**{rowid}**: {note}\n"
+            rowid, topic, note, userID, guildID, channelID = note
+            message += f"**#{rowid}**:\t{note}\n"
 
         await interaction.followup.send(message, ephemeral=True)
     
+    elif command == "delete":
+
+        if id == -1:
+            await interaction.followup.send("Please specify the note ID", ephemeral=False)
+            return
+        
+        topic, note, userID, guildID, channelID = cur.execute('SELECT * FROM notes WHERE guildID = ? AND rowid = ?', (interaction.guild.id, id)).fetchone()
+        
+        if interaction.user.id == int(userID):
+
+            cur.execute('DELETE FROM notes WHERE guildID = ? AND rowid = ?', (interaction.guild.id, id))
+            con.commit()
+
+            message = f"Successfully deleted note \"*{note}*\" with ID {id}"
+            await interaction.followup.send(message, ephemeral=False)
+        
+        else:
+
+            await interaction.followup.send("You are not authorized to delete this note", ephemeral=True)
+
     else:
 
         await interaction.followup.send("Invalid Command",ephemeral=True)
 
         
+@bot.tree.command(name='quiz', description='Starts a quiz with the given topic from the flashcards!')
+
+@app_commands.describe(
+    topic="The topic of the quiz (optional)",
+)
+
+async def quiz(interaction: discord.Interaction, topic: str = None):
+
+    await interaction.response.defer(ephemeral=True)
+
+    if topic is None:
+        questions = cur.execute('SELECT rowid, * FROM flashcards WHERE guildID = ?', (interaction.guild.id,)).fetchall()
+    else:
+        questions = cur.execute('SELECT rowid, * FROM flashcards WHERE guildID = ? AND topic = ?', (interaction.guild.id, topic)).fetchall()
+
+    if len(questions) == 0:
+        await interaction.followup.send("No questions found!", ephemeral=True)
+        return
+
+    continue_quiz = True
+    asked_questions = 0
+    correct_answers = 0
+
+    while continue_quiz:
+
+        question = random.choice(questions)
+        rowid, topic, question_text, answer, userID, guildID, channelID = question
+
+        embed = discord.Embed(
+            title=f"Quiz Time! - Topic: {topic}",
+            description=question_text,
+            color=discord.Color.blue()
+        )
+        embed.set_footer(text="Type your answer in the chat!")
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        asked_questions += 1
+
+        def check(m):
+            return m.author == interaction.user and m.channel == interaction.channel
+        
+        try:
+            msg = await bot.wait_for('message', check=check, timeout=60.0)
+        except:
+            await interaction.followup.send("You took too long to respond! The quiz has ended.", ephemeral=True)
+            await interaction.followup.send(f"You got  {correct_answers} out of {asked_questions} questions correctly. ({correct_answers / asked_questions * 100:.2f}%)", ephemeral=True)
+            return
+
+        if msg.content.lower() == answer.lower():
+            correct_answers += 1
+            await interaction.followup.send("Correct! Well done!", ephemeral=True)
+        else:
+            await interaction.followup.send(f"Incorrect. The correct answer was: {answer}", ephemeral=True)
+
+        questions.remove(question)
+
+        if len(questions) == 0:
+            await interaction.followup.send("No more questions left!", ephemeral=True)
+            await interaction.followup.send(f"You got {correct_answers} out of {asked_questions} questions correctly. ({correct_answers / asked_questions * 100:.2f}%)", ephemeral=True)
+            break
+
+        await interaction.followup.send("Do you want to continue with another question? (yes/no)", ephemeral=True)
+
+        try:
+            response = await bot.wait_for('message', check=check, timeout=60.0)
+        except:
+            await interaction.followup.send("You took too long to respond! The quiz has ended.", ephemeral=True)
+            await interaction.followup.send(f"You got {correct_answers} out of {asked_questions} questions correctly. ({correct_answers / asked_questions * 100:.2f}%)", ephemeral=True)
+            return
+
+        if response.content.lower() in ['yes', 'y']:
+            continue_quiz = True
+        else:
+            await interaction.followup.send("The quiz has ended.", ephemeral=True)
+            await interaction.followup.send(f"You got {correct_answers} out of {asked_questions} questions correctly. ({correct_answers / asked_questions * 100:.2f}%)", ephemeral=True)
+            continue_quiz = False
 
 bot.run(token)

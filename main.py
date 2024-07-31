@@ -17,8 +17,10 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 
 con = sqlite3.connect('databases/database-discord.db')
 cur = con.cursor()
+
 cur.execute('CREATE TABLE IF NOT EXISTS reminders(username TEXT, remind_at TIMESTAMP, subject TEXT, reminded BOOLEAN, channelID TEXT, guildID TEXT)')
 cur.execute('CREATE TABLE IF NOT EXISTS flashcards(topic TEXT, question TEXT, answer TEXT, userID TEXT, guildID TEXT, channelID TEXT)')
+cur.execute('CREATE TABLE IF NOT EXISTS notes(topic TEXT, note TEXT, userID TEXT, guildID TEXT, channelID TEXT)')
 
 @tasks.loop(minutes=1)
 async def check_reminders():
@@ -80,7 +82,12 @@ async def on_ready():
         print(e)
     if not check_reminders.is_running():
         check_reminders.start()
-    
+
+@bot.command(name="sync")
+async def sync(ctx):
+    syncing = await ctx.bot.tree.sync()
+    await ctx.send(f"Synced {len(syncing)} command(s)!")
+    return
 
 @bot.tree.command(name='clear', description='Clears the given number of messages')
 async def clear(interaction: discord.Interaction, amount: int = 5):
@@ -157,15 +164,30 @@ async def remindme(interaction: discord.Interaction, time:str, subject:str):
             return
 
 @bot.tree.command(name='flashcards', description='Add, Store and Manage Flashcards')
-async def flashcards(interaction: discord.Interaction, command: str, topic: str = None, question: str = None, answer: str = None, page: int = 1):
+@app_commands.describe(
+    command="The command to execute (required)",
+    topic="The topic of the flashcard (required for add command, optional for list command)",
+    question="The question that you want to add (required only for add command)",
+    answer="The answer to the question (required only for add command)",
+    page="If you want to fetch a specific page. Each page has 5 flash cards (optional, default 1)",
+    id="Id of the flash card (required for delete command)"
+)
+@app_commands.choices(
+    command=[
+        app_commands.Choice(name="add", value="add"),
+        app_commands.Choice(name="list", value="list"),
+        app_commands.Choice(name="delete", value="delete"),
+    ],
+)
+async def flashcards(interaction: discord.Interaction, command: app_commands.Choice[str], topic: str = None, question: str = None, answer: str = None, page: int = 1, id: int = -1):
     
-    await interaction.response.defer(ephemeral=True)
+    await interaction.response.defer(ephemeral=False)
 
     if command == "add":
         if topic is None or question is None or answer is None:
             await interaction.followup.send(
                 "One or more arguments are missing!\nCommand usage: ***/flashcards add <topic> <question> <answer>***", 
-                ephemeral=True
+                ephemeral=False
             )
             return
 
@@ -183,10 +205,10 @@ async def flashcards(interaction: discord.Interaction, command: str, topic: str 
             embed.add_field(name="Answer", value=answer, inline=False)
             embed.set_footer(text="Study Buddy")
 
-            await interaction.followup.send(embed=embed)
+            await interaction.followup.send(embed=embed, ephemeral=False)
 
         except Exception as e:
-            await interaction.followup.send(f"An error occurred while adding the flashcard: {e}", ephemeral=True)
+            await interaction.followup.send(f"An error occurred while adding the flashcard: {e}", ephemeral=False)
 
     elif command == "list":
         
@@ -202,7 +224,7 @@ async def flashcards(interaction: discord.Interaction, command: str, topic: str 
                 color=discord.Color.red()
             )
             embed.set_footer(text="Study Buddy")
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=False)
             return
     
         if len(flashcards) > 5:
@@ -217,7 +239,7 @@ async def flashcards(interaction: discord.Interaction, command: str, topic: str 
                 color=discord.Color.red()
             )
             embed.set_footer(text="Study Buddy")
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=False)
             return
     
         
@@ -245,7 +267,83 @@ async def flashcards(interaction: discord.Interaction, command: str, topic: str 
             total_pages += 1
         
         await interaction.followup.send(f"Page {page} of {total_pages}", ephemeral=True)
+    
+    elif command == "delete":
+        if id == -1:
+            await interaction.followup.send("Please specify the flashcard ID", ephemeral=False)
+            return
+        
+        delete_row = cur.execute('SELECT * FROM flashcards WHERE guildID = ? AND rowid = ?', (interaction.guild.id, id)).fetchone()
+        
+        if interaction.user.guild_permissions.administrator or interaction.user.id == int(delete_row[3]):
+
+            cur.execute('DELETE FROM flashcards WHERE guildID = ? AND rowid = ?', (interaction.guild.id, id))
+            con.commit()
+
+            embed = discord.Embed(
+                title="Flash Card Deleted!",
+                description=f"Flash card with ID {id} deleted by {interaction.user.mention}",
+                color=discord.Color.red()
+            )
+
+            embed.add_field(name="Question", value=delete_row[1], inline=False)
+            embed.add_field(name="Answer", value=delete_row[2], inline=False)
+            embed.set_footer(text="Study Buddy")
+
+            await interaction.followup.send(embed=embed, ephemeral=False)
     else:
         await interaction.followup.send("Invalid Command",ephemeral=True)
+
+
+@bot.tree.command(name='notes', description='Add, Store and Manage Notes')
+async def notes(interaction: discord.Interaction,command: str, topic: str = None, note: str = None):
+
+    """
+        Notes are supposed to be different from flashcards
+        While the whole group can access flash cards and view their content, notes can
+        only be seen, added and deleted by the user who created them.
+        Notes are also supposed to be more simplistic
+    """
+
+    await interaction.response.defer()
+
+    if command == "add":
+
+        if topic is None or note is None:
+            await interaction.followup.send("Please specify a topic and a note", ephemeral=True)
+            return
+
+        cur.execute('INSERT INTO notes VALUES (?, ?, ?, ?)', (interaction.user.id, interaction.guild.id, topic, note))
+        con.commit()
+        rowid = cur.lastrowid
+        
+        message = f"Note for {topic} added by {interaction.user.mention}\n**{rowid}**: {note}"
+        await interaction.followup.send(message, ephemeral=True)
+    
+    elif command == "list":
+        
+        if topic is None:
+            notes = cur.execute('SELECT rowid, * FROM notes WHERE guildID = ?', (interaction.guild.id,)).fetchall()
+        else:
+            notes = cur.execute('SELECT rowid, * FROM notes WHERE guildID = ? AND topic = ?', (interaction.guild.id, topic)).fetchall()
+
+        if len(notes) == 0:
+            message = "No notes found!"
+            await interaction.followup.send(message, ephemeral=True)
+            return
+        
+        message = "***Notes:***\n\n"
+        for note in notes:
+
+            rowid, userID, guildID, topic, note = note
+            message += f"**{rowid}**: {note}\n"
+
+        await interaction.followup.send(message, ephemeral=True)
+    
+    else:
+
+        await interaction.followup.send("Invalid Command",ephemeral=True)
+
+        
 
 bot.run(token)
